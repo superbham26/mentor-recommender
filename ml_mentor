@@ -1,0 +1,108 @@
+from transformers import BertModel, BertTokenizer
+import torch
+import pandas as pd
+from torch.utils.data import DataLoader, TensorDataset
+from transformers import BertForMaskedLM, AdamW
+from sklearn.model_selection import train_test_split
+from transformers import BertForSequenceClassification
+
+tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+
+from transformers import BertForMaskedLM, BertTokenizer, AdamW
+
+model = BertForMaskedLM.from_pretrained("bert-base-uncased")
+
+#Load dataframe as df
+input_ids_train = tokenizer(df['about'].tolist(), return_tensors='pt', padding=True, truncation=True)['input_ids']
+masked_input_ids_train = input_ids_train.clone()
+masked_positions_train = torch.rand(masked_input_ids_train.shape) < 0.15
+masked_input_ids_train[masked_positions_train] = tokenizer.mask_token_id
+labels_train = input_ids_train.clone()
+labels_train[~masked_positions_train] = -100
+
+from torch.cuda import is_available
+
+# Check if GPU is available and use it if possible
+device = torch.device("cuda" if is_available() else "cpu")
+model.to(device)
+
+attention_masks_train = (masked_input_ids_train != tokenizer.pad_token_id).float()
+
+# Convert everything to PyTorch tensors
+masked_input_ids_train = masked_input_ids_train.to(torch.long)
+labels_train = labels_train.to(torch.long)
+attention_masks_train = attention_masks_train.to(torch.float)
+
+train_dataset = TensorDataset(masked_input_ids_train, attention_masks_train, labels_train)
+
+# Use DataLoader for batching
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+
+
+# Training settings
+optimizer = AdamW(model.parameters(), lr=1e-5)
+num_epochs = 10
+
+# Training loop
+for epoch in range(num_epochs):
+    model.train()
+    total_loss = 0
+    for batch in train_loader:
+        # Move batch to the same device as the model
+        input_ids, attention_mask, labels = [b.to(device) for b in batch]
+
+        optimizer.zero_grad()
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+        loss = outputs.loss
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+
+    avg_loss = total_loss / len(train_loader)
+    print(f"Epoch {epoch+1}/{num_epochs}, Average Loss: {avg_loss}")
+
+# Save the fine-tuned model
+model.save_pretrained("fine_tuned_bert_model")
+
+import torch
+from transformers import BertTokenizer, BertModel
+from sklearn.metrics.pairwise import cosine_similarity
+import pandas as pd
+
+# Load your pre-trained BERT model and tokenizer
+
+# Load your faculty descriptions from a DataFrame
+# Make sure to preprocess faculty descriptions as done previously
+faculty_df = pd.read_csv("MLPR.csv")
+faculty_df = faculty_df.head(217)
+faculty_descriptions = faculty_df['about'].tolist()
+
+
+# Tokenize and obtain BERT embeddings for faculty descriptions
+tokenized_faculty = tokenizer(faculty_descriptions, return_tensors='pt', padding=True, truncation=True)
+with torch.no_grad():
+    faculty_output = model(**tokenized_faculty)
+
+# Mean pooling for faculty embeddings
+faculty_embeddings = faculty_output.last_hidden_state.mean(dim=1).numpy()
+
+user_input = 'Advancements in robotic surgery and patient outcomes'
+# Tokenize and obtain BERT embeddings for the user input
+tokenized_user = tokenizer(user_input, return_tensors='pt', padding=True, truncation=True)
+with torch.no_grad():
+    user_output = model(**tokenized_user)
+
+# Mean pooling for user input embeddings
+user_embedding = user_output.last_hidden_state.mean(dim=1).numpy()
+
+# Compute cosine similarity between user input and faculty descriptions
+similarity_scores = cosine_similarity(user_embedding, faculty_embeddings).flatten()
+
+# Rank faculty based on similarity scores
+faculty_df['Similarity'] = similarity_scores
+sorted_faculty = faculty_df.sort_values(by='Similarity', ascending=False)
+
+# Display the top faculty recommendations
+top_faculty = sorted_faculty[['name', 'Similarity']].head(5)
+print(top_faculty)
